@@ -16,6 +16,7 @@ class JsonRequestLoggerMiddleware:
         event_id_header: Optional[str] = None,
         client_ip_headers: Optional[List[str]] = None,
         logger: Optional[logging.Logger] = None,
+        log_max_queue_size: int = 1000,
     ) -> None:
         """
         Initializes the JSON Request Logger Middleware.
@@ -34,6 +35,8 @@ class JsonRequestLoggerMiddleware:
                 Defaults to ["x-forwarded-for", "x-real-ip"].
             logger (Optional[logging.Logger], optional): A custom logger to use for logging requests. If not provided, a default
                 logger with INFO level is created and configured to use QueueHandler.
+            log_max_queue_size (int): The maximum size for the logging queue. Defaults to 1000.
+                Defaults to 1000
         """
         self.app = app
         self.error_info_name = error_info_name
@@ -55,7 +58,7 @@ class JsonRequestLoggerMiddleware:
                 )
         else:
             # Create a default logger that uses QueueHandler and QueueListener.
-            log_queue = queue.Queue(-1)
+            log_queue = queue.Queue(log_max_queue_size)
             queue_handler = QueueHandler(log_queue)
             
             # Create a stream handler for output.
