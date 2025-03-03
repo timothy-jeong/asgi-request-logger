@@ -47,6 +47,9 @@ async def test_json_request_logger_success():
         client_ip_headers=["x-forwarded-for", "x-real-ip"],
         logger=test_logger,
     )
+    
+    # remove warning
+    list_handler.records.clear()
 
     # Create a fake HTTP scope with headers.
     scope: Scope = {
@@ -124,6 +127,9 @@ async def test_json_request_logger_error():
         app=error_app,
         logger=test_logger,
     )
+    
+    # remove warning
+    list_handler.records.clear()
 
     # Create a fake HTTP scope with error information in state.
     scope: Scope = {

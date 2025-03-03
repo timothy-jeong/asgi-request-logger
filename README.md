@@ -12,6 +12,12 @@ Due to FastAPI/Starlette’s internal exception handling, when a 500 error occur
     - Error Info Mapping: Define which keys from the error info (set by exception handlers) should be logged.
     - Custom Logger: Optionally supply your own logging.Logger instance.
 
+## Logging Configuration
+By default, if no custom logger is provided, the middleware creates a default logger that uses a `QueueHandler` and `QueueListener` to offload logging I/O to a separate thread. This approach helps prevent blocking the main thread in asynchronous environments. You can configure the maximum queue size via the `log_max_queue_size` parameter (default is 1000) to balance memory usage and performance. 
+
+> Note: <br/>
+If you provide your own logger, ensure that it uses a `QueueHandler` for non-blocking behavior. The middleware will emit a warning if the supplied logger does not utilize a `QueueHandler`.
+
 ## Installation
 
 ```bash
@@ -94,3 +100,7 @@ A typical log entry might look like this:
 ```
 
 If error information is present (set by your exception handlers), the log entry will also include keys like `"error_code"`, `"error_message"`, and `"stack_trace"`.
+
+## Performance Considerations
+
+While offloading logging to a separate thread via QueueHandler/QueueListener introduces a small overhead (for example, increasing average request latency from ~79 ms to ~84 ms in our tests), this trade-off is essential in asynchronous environments. It prevents blocking the main thread during heavy I/O operations, and the benefits become even more significant when logging to external systems or handling large volumes of log data.
