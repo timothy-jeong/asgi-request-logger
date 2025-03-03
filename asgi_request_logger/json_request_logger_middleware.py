@@ -2,15 +2,17 @@ import logging
 import time
 import uuid
 import json
+import queue
 from typing import Optional, Dict, List
 from asgiref.typing import ASGI3Application, ASGIReceiveCallable, ASGISendCallable, Scope, ASGISendEvent
+from logging.handlers import QueueHandler, QueueListener
 
 class JsonRequestLoggerMiddleware:
     def __init__(
         self,
         app: ASGI3Application,
         error_info_name: str = "error_info",
-        error_info_mapping: Optional[Dict[str, str]] = None,  # Mapping for error info keys to log keys
+        error_info_mapping: Optional[Dict[str, str]] = None,
         event_id_header: Optional[str] = None,
         client_ip_headers: Optional[List[str]] = None,
         logger: Optional[logging.Logger] = None,
@@ -31,7 +33,7 @@ class JsonRequestLoggerMiddleware:
                 in order of priority. If none are provided, the client IP will be obtained from the scope's "client" value.
                 Defaults to ["x-forwarded-for", "x-real-ip"].
             logger (Optional[logging.Logger], optional): A custom logger to use for logging requests. If not provided, a default
-                logger with INFO level is created. Defaults to None.
+                logger with INFO level is created and configured to use QueueHandler.
         """
         self.app = app
         self.error_info_name = error_info_name
@@ -45,18 +47,34 @@ class JsonRequestLoggerMiddleware:
 
         if logger:
             self.logger = logger
+            if not any(isinstance(h, QueueHandler) for h in logger.handlers):
+                self.logger.warning(
+                    "JsonRequestLoggerMiddleware: "
+                    "The provided logger does not use a QueueHandler. It is recommended to use QueueHandler "
+                    "to avoid blocking in an asynchronous environment."
+                )
         else:
-            logger = logging.getLogger("request-logger")
-            logger.setLevel(logging.INFO)
-            if logger.hasHandlers():
-                logger.handlers.clear()
+            # Create a default logger that uses QueueHandler and QueueListener.
+            log_queue = queue.Queue(-1)
+            queue_handler = QueueHandler(log_queue)
+            
+            # Create a stream handler for output.
             stream_handler = logging.StreamHandler()
             stream_handler.setLevel(logging.INFO)
             formatter = logging.Formatter("%(message)s")
             stream_handler.setFormatter(formatter)
-            logger.addHandler(stream_handler)
+            
+            # Create a listener that will process log records from the queue.
+            listener = QueueListener(log_queue, stream_handler)
+            listener.start()
+
+            logger = logging.getLogger("request-logger")
+            logger.setLevel(logging.INFO)
+            logger.handlers.clear()
+            logger.addHandler(queue_handler)
             logger.propagate = False
             self.logger = logger
+            self._listener = listener  # store listener so it can be stopped later if needed
 
     async def __call__(
         self,
@@ -134,7 +152,19 @@ class JsonRequestLoggerMiddleware:
         try:
             level_mapping = logging.getLevelNamesMapping()
         except AttributeError:
-            level_mapping = {"DEBUG": logging.DEBUG, "INFO": logging.INFO, "WARNING": logging.WARNING,
-                            "ERROR": logging.ERROR, "CRITICAL": logging.CRITICAL}
+            level_mapping = {
+                "DEBUG": logging.DEBUG,
+                "INFO": logging.INFO,
+                "WARNING": logging.WARNING,
+                "ERROR": logging.ERROR,
+                "CRITICAL": logging.CRITICAL,
+            }
         log_level_int = level_mapping.get(log_level, logging.INFO)
         self.logger.log(log_level_int, json.dumps(log_data, ensure_ascii=False))
+        
+    def __del__(self):
+        if hasattr(self, "_listener"):
+            self._listener.stop()
+    
+    def shutdown(self):
+        self.__del__()
