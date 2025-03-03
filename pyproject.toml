@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "asgi-request-logger"
-version = "0.1.0"
+version = "0.1.1"
 description = "A lightweight request logger middleware for ASGI applications"
 authors = ["timothy jeong <k.jts8257@gmail.com>"]
 license = "MIT"
@@ -9,7 +9,7 @@ repository = "https://github.com/timothy-jeong/asgi-request-logger"
 homepage = "https://github.com/timothy-jeong/asgi-request-logger"
 
 [tool.poetry.dependencies]
-python = "^3.8"
+python = "^3.9"
 asgiref = "^3.6.0"
 
 [tool.poetry.dev-dependencies]
