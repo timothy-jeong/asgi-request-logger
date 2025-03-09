@@ -3,7 +3,7 @@ import time
 import uuid
 import json
 import queue
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Callable, Any
 from asgiref.typing import ASGI3Application, ASGIReceiveCallable, ASGISendCallable, Scope, ASGISendEvent
 from logging.handlers import QueueHandler, QueueListener
 
@@ -17,6 +17,7 @@ class JsonRequestLoggerMiddleware:
         client_ip_headers: Optional[List[str]] = None,
         logger: Optional[logging.Logger] = None,
         log_max_queue_size: int = 1000,
+        extra_fields_extractor: Optional[Callable[[Scope], Dict[str, Any]]] = None,
     ) -> None:
         """
         Initializes the JSON Request Logger Middleware.
@@ -26,7 +27,7 @@ class JsonRequestLoggerMiddleware:
             error_info_name (str, optional): The key name in the request state from which to extract error information.
                 Defaults to "error_info".
             error_info_mapping (Optional[Dict[str, str]], optional): A dictionary mapping error information keys (from the request
-                state) to desired log field names. For example, {"code": "error_code", "message": "error_message"}.
+                state) to desired log field names. For example, {"code": "error_code", "message": "error_message", "stack_trace": "stack_trace"}.
                 Defaults to a mapping for "code", "message", and "stack_trace".
             event_id_header (Optional[str], optional): The HTTP header name to extract an event ID from. If not provided or if the header
                 is missing, a new UUID will be generated. Defaults to None.
@@ -34,9 +35,11 @@ class JsonRequestLoggerMiddleware:
                 in order of priority. If none are provided, the client IP will be obtained from the scope's "client" value.
                 Defaults to ["x-forwarded-for", "x-real-ip"].
             logger (Optional[logging.Logger], optional): A custom logger to use for logging requests. If not provided, a default
-                logger with INFO level is created and configured to use QueueHandler.
+                logger with INFO level is created and configured to use a QueueHandler.
             log_max_queue_size (int): The maximum size for the logging queue. Defaults to 1000.
-                Defaults to 1000
+            extra_fields_extractor (Optional[Callable[[Scope], Dict[str, Any]]], optional): A callable that receives the entire scope
+                and returns a dictionary of additional fields to add to the log output. This allows custom mapping of scope items
+                to JSON fields.
         """
         self.app = app
         self.error_info_name = error_info_name
@@ -47,18 +50,19 @@ class JsonRequestLoggerMiddleware:
         }
         self.event_id_header = event_id_header.lower() if event_id_header else None
         self.client_ip_headers = [h.lower() for h in (client_ip_headers or ["x-forwarded-for", "x-real-ip"])]
+        self.log_max_queue_size = log_max_queue_size
+        self.extra_fields_extractor = extra_fields_extractor
 
         if logger:
             self.logger = logger
             if not any(isinstance(h, QueueHandler) for h in logger.handlers):
                 self.logger.warning(
-                    "JsonRequestLoggerMiddleware: "
-                    "The provided logger does not use a QueueHandler. It is recommended to use QueueHandler "
+                    "JsonRequestLoggerMiddleware: The provided logger does not use a QueueHandler. It is recommended to use QueueHandler "
                     "to avoid blocking in an asynchronous environment."
                 )
         else:
             # Create a default logger that uses QueueHandler and QueueListener.
-            log_queue = queue.Queue(log_max_queue_size)
+            log_queue = queue.Queue(maxsize=self.log_max_queue_size)
             queue_handler = QueueHandler(log_queue)
             
             # Create a stream handler for output.
@@ -151,6 +155,12 @@ class JsonRequestLoggerMiddleware:
             "level": log_level,
         })
 
+        # Apply additional custom fields extracted from scope, if any.
+        if self.extra_fields_extractor:
+            extra_fields = self.extra_fields_extractor(scope)
+            if isinstance(extra_fields, dict):
+                log_data.update(extra_fields)
+
         # Fallback for logging.getLevelNamesMapping if not available.
         try:
             level_mapping = logging.getLevelNamesMapping()
@@ -170,4 +180,7 @@ class JsonRequestLoggerMiddleware:
             self._listener.stop()
     
     def shutdown(self):
+        """
+        when application about to shutdown, you better call this method or __del__ directly
+        """
         self.__del__()
