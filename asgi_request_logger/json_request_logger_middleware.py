@@ -2,82 +2,65 @@ import logging
 import time
 import uuid
 import json
-import queue
 from typing import Optional, Dict, List
 from asgiref.typing import ASGI3Application, ASGIReceiveCallable, ASGISendCallable, Scope, ASGISendEvent
-from logging.handlers import QueueHandler, QueueListener
+
+_default_error_info_mapping = {
+    "code": "error_code",
+    "message": "error_message",
+    "stack_trace": "stack_trace",
+}
+
+_default_log_info_mapping = {
+    "method": "method",
+    "path": "path",
+    "client_ip": "client_ip",
+    "user_agent": "user_agent",
+}
 
 class JsonRequestLoggerMiddleware:
     def __init__(
         self,
         app: ASGI3Application,
+        logger: logging.Logger,
+        log_info_mapping: Optional[Dict[str, str]] = _default_log_info_mapping,        
         error_info_name: str = "error_info",
-        error_info_mapping: Optional[Dict[str, str]] = None,
+        error_info_mapping: Optional[Dict[str, str]] = _default_error_info_mapping,
         event_id_header: Optional[str] = None,
         client_ip_headers: Optional[List[str]] = None,
-        logger: Optional[logging.Logger] = None,
-        log_max_queue_size: int = 1000,
     ) -> None:
         """
         Initializes the JSON Request Logger Middleware.
 
         Args:
             app (ASGI3Application): The ASGI application instance to wrap.
-            error_info_name (str, optional): The key name in the request state from which to extract error information.
+            error_info_name (str, optional): The key in the request state from which to extract error information.
                 Defaults to "error_info".
-            error_info_mapping (Optional[Dict[str, str]], optional): A dictionary mapping error information keys (from the request
-                state) to desired log field names. For example, {"code": "error_code", "message": "error_message"}.
-                Defaults to a mapping for "code", "message", and "stack_trace".
-            event_id_header (Optional[str], optional): The HTTP header name to extract an event ID from. If not provided or if the header
-                is missing, a new UUID will be generated. Defaults to None.
-            client_ip_headers (Optional[List[str]], optional): A list of HTTP header names to check for the client IP address,
-                in order of priority. If none are provided, the client IP will be obtained from the scope's "client" value.
+            error_info_mapping (Optional[Dict[str, str]], optional): A dictionary mapping error information keys
+                (from the request state) to desired log field names. For example, {"code": "error_code",
+                "message": "error_message", "stack_trace": "stack_trace"}. Defaults to _default_error_info_mapping.
+            event_id_header (Optional[str], optional): The HTTP header name to extract an event ID from.
+                If not provided or missing, a new UUID is generated. Defaults to None.
+            client_ip_headers (Optional[List[str]], optional): A list of HTTP header names to check for the client IP.
+                If none are provided, the client IP will be obtained from the scope's "client" value.
                 Defaults to ["x-forwarded-for", "x-real-ip"].
-            logger (Optional[logging.Logger], optional): A custom logger to use for logging requests. If not provided, a default
-                logger with INFO level is created and configured to use QueueHandler.
-            log_max_queue_size (int): The maximum size for the logging queue. Defaults to 1000.
-                Defaults to 1000
+            logger (logging.Logger], optional): A custom logger for logging requests.
+                If not provided, a default logger with INFO level is created and configured to use a QueueHandler.
+            log_info_mapping (Optional[Dict[str, str]], optional): A dictionary mapping keys from the ASGI scope or headers
+                to additional fields in the JSON log output. For example, {"method": "method", "path": "path",
+                "client_ip": "client_ip", "user_agent": "user_agent"}. Defaults to _default_log_info_mapping.
         """
         self.app = app
         self.error_info_name = error_info_name
-        self.error_info_mapping = error_info_mapping or {
-            "code": "error_code",
-            "message": "error_message",
-            "stack_trace": "stack_trace",
-        }
+        self.error_info_mapping = error_info_mapping
         self.event_id_header = event_id_header.lower() if event_id_header else None
         self.client_ip_headers = [h.lower() for h in (client_ip_headers or ["x-forwarded-for", "x-real-ip"])]
-
-        if logger:
-            self.logger = logger
-            if not any(isinstance(h, QueueHandler) for h in logger.handlers):
-                self.logger.warning(
-                    "JsonRequestLoggerMiddleware: "
-                    "The provided logger does not use a QueueHandler. It is recommended to use QueueHandler "
-                    "to avoid blocking in an asynchronous environment."
-                )
-        else:
-            # Create a default logger that uses QueueHandler and QueueListener.
-            log_queue = queue.Queue(log_max_queue_size)
-            queue_handler = QueueHandler(log_queue)
-            
-            # Create a stream handler for output.
-            stream_handler = logging.StreamHandler()
-            stream_handler.setLevel(logging.INFO)
-            formatter = logging.Formatter("%(message)s")
-            stream_handler.setFormatter(formatter)
-            
-            # Create a listener that will process log records from the queue.
-            listener = QueueListener(log_queue, stream_handler)
-            listener.start()
-
-            logger = logging.getLogger("request-logger")
-            logger.setLevel(logging.INFO)
-            logger.handlers.clear()
-            logger.addHandler(queue_handler)
-            logger.propagate = False
-            self.logger = logger
-            self._listener = listener  # store listener so it can be stopped later if needed
+        
+        self.log_info_mapping = log_info_mapping
+        
+        if logger is None:
+            raise ValueError("A logger must be provided")
+        self.logger = logger
 
     async def __call__(
         self,
@@ -90,7 +73,7 @@ class JsonRequestLoggerMiddleware:
 
         start_time = time.time()
 
-        # Parse headers and convert keys to lowercase for case-insensitive lookup.
+        # Convert headers to a dictionary with lowercase keys.
         headers = {k.decode("latin1").lower(): v.decode("latin1") for k, v in scope.get("headers", [])}
 
         # Determine event ID from header or generate a new UUID.
@@ -99,7 +82,7 @@ class JsonRequestLoggerMiddleware:
         else:
             event_id = str(uuid.uuid4())
 
-        # Extract client IP from the specified headers.
+        # Extract client IP from headers.
         client_ip = None
         for header in self.client_ip_headers:
             if header in headers:
@@ -108,15 +91,18 @@ class JsonRequestLoggerMiddleware:
         if not client_ip:
             client_ip = scope.get("client", ("unknown",))[0]
 
-        # Default log data.
+        # Build the default log data with computed fields.
         log_data = {
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.%fZ", time.gmtime()),
             "event_id": event_id,
-            "method": scope.get("method"),
-            "path": scope.get("path"),
-            "client_ip": client_ip,
-            "user_agent": headers.get("user-agent"),
         }
+        # Populate log_data using log_info_mapping.
+        for source_key, dest_key in self.log_info_mapping.items():
+            value = headers.get(source_key.lower())
+            if value is None:
+                value = scope.get(source_key)
+            if value is not None:
+                log_data[dest_key] = value
 
         response_status_code: Optional[int] = None
 
@@ -127,23 +113,24 @@ class JsonRequestLoggerMiddleware:
             await send(message)
 
         await self.app(scope, receive, send_wrapper)
-
         time_taken_ms = int((time.time() - start_time) * 1000)
 
         if response_status_code is None:
-            response_status_code = 500  # Default to 500 if no response status found
+            response_status_code = 500
         log_type = "access" if response_status_code < 400 else "error"
         log_level = "ERROR" if response_status_code >= 400 else "INFO"
 
-        # Get error info from state (if available)
+        # Process error info from scope state.
         error_info = scope.get("state", {}).get(self.error_info_name, None)
-        if not error_info:
-            log_data.update({"error": None})
+        if error_info is None:
+            log_data["error"] = None
         else:
-            log_data.update({"error": {}})
+            log_data["error"] = {}
             for src_key, dest_key in self.error_info_mapping.items():
                 log_data["error"][dest_key] = error_info.get(src_key)
-
+            if "state" in scope and isinstance(scope["state"], dict):
+                scope["state"][self.error_info_name] = None
+                
         log_data.update({
             "time_taken_ms": time_taken_ms,
             "status_code": response_status_code,
@@ -151,7 +138,7 @@ class JsonRequestLoggerMiddleware:
             "level": log_level,
         })
 
-        # Fallback for logging.getLevelNamesMapping if not available.
+        # Use a fallback for logging.getLevelNamesMapping if not available.
         try:
             level_mapping = logging.getLevelNamesMapping()
         except AttributeError:
@@ -164,10 +151,3 @@ class JsonRequestLoggerMiddleware:
             }
         log_level_int = level_mapping.get(log_level, logging.INFO)
         self.logger.log(log_level_int, json.dumps(log_data, ensure_ascii=False))
-        
-    def __del__(self):
-        if hasattr(self, "_listener"):
-            self._listener.stop()
-    
-    def shutdown(self):
-        self.__del__()
