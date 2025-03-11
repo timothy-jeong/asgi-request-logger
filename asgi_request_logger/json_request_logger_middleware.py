@@ -60,6 +60,7 @@ class JsonRequestLoggerMiddleware:
         
         if logger is None:
             raise ValueError("A logger must be provided")
+        self.logger = logger
 
     async def __call__(
         self,
@@ -127,7 +128,9 @@ class JsonRequestLoggerMiddleware:
             log_data["error"] = {}
             for src_key, dest_key in self.error_info_mapping.items():
                 log_data["error"][dest_key] = error_info.get(src_key)
-
+            if "state" in scope and isinstance(scope["state"], dict):
+                scope["state"][self.error_info_name] = None
+                
         log_data.update({
             "time_taken_ms": time_taken_ms,
             "status_code": response_status_code,
