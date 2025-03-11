@@ -11,12 +11,36 @@ Due to FastAPI/Starlette’s internal exception handling, when a 500 error occur
     - Client IP: Extract client IP from headers like X-Forwarded-For or X-Real-IP (configurable).
     - Error Info Mapping: Define which keys from the error info (set by exception handlers) should be logged.
     - Custom Logger: Optionally supply your own logging.Logger instance.
+  -  Extra Fields Extractor: Provide a callable to extract additional fields from the ASGI scope and include them in the log output.
+
 
 ## Logging Configuration
 By default, if no custom logger is provided, the middleware creates a default logger that uses a `QueueHandler` and `QueueListener` to offload logging I/O to a separate thread. This approach helps prevent blocking the main thread in asynchronous environments. You can configure the maximum queue size via the `log_max_queue_size` parameter (default is 1000) to balance memory usage and performance. 
 
 > Note: <br/>
 If you provide your own logger, ensure that it uses a `QueueHandler` for non-blocking behavior. The middleware will emit a warning if the supplied logger does not utilize a `QueueHandler`.
+
+## Extra Fields Extractor
+You can extend the default log output by supplying an `extra_fields_extractor` callable when adding the middleware. This function receives the entire ASGI scope and returns a dictionary of additional fields to merge into the JSON log output. For example, you might extract a custom header or any other contextual information from the scope:
+
+```python
+def extra_fields_extractor(scope: dict) -> dict:
+    # Convert headers to lowercase for easy lookup.
+    headers = {k.decode("latin1").lower(): v.decode("latin1") for k, v in scope.get("headers", [])}
+    extra = {}
+    if "x-custom-header" in headers:
+        extra["custom_field"] = headers["x-custom-header"]
+    return extra
+```
+Then, you can pass this function when adding the middleware:
+
+```python
+app.add_middleware(
+    JsonRequestLoggerMiddleware,
+    extra_fields_extractor=extra_fields_extractor,
+)
+```
+
 
 ## Installation
 
@@ -44,8 +68,10 @@ app.add_middleware(
         "code": "error_code",
         "message": "error_message",
         "stack_trace": "stack_trace"
-    }  # The expected dictionary format for the error information. This value will be logged under the "error" key.
+    },  # The expected dictionary format for the error information. This value will be logged under the "error" key.
+    extra_fields_extractor=extra_fields_extractor  # Extracts additional fields from the ASGI scope.
 )
+
 ```
 
 For detailed error information, you should pass error-related info to the scope. In a FastAPI application, you can do this in your exception handlers. For example:
@@ -95,7 +121,8 @@ A typical log entry might look like this:
   "time_taken_ms": 12,
   "status_code": 200,
   "log_type": "access",
-  "level": "INFO"
+  "level": "INFO",
+  "custom_field": "custom_value"  // This field comes from the extra_fields_extractor, if applicable.
 }
 ```
 
