@@ -40,7 +40,7 @@ class JsonRequestLoggerMiddleware:
     def __init__(
         self,
         app: ASGI3Application,
-        logger: Optional[logging.Logger],
+        logger: Optional[logging.Logger] = None,
         log_info_mapping: Optional[Dict[str, str]] = _default_log_info_mapping,        
         error_info_name: str = "error_info",
         error_info_mapping: Optional[Dict[str, str]] = _default_error_info_mapping,
