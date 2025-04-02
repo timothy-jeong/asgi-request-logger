@@ -27,7 +27,7 @@ def get_queue_logger(
     queue_handler = QueueHandler(log_queue)
     
     stream_handler = logging.StreamHandler()
-    stream_handler.setLevel(logging.INFO)
+    stream_handler.setLevel(log_level)
     formatter = logging.Formatter("%(message)s")
     stream_handler.setFormatter(formatter)
     
@@ -39,3 +39,11 @@ def get_queue_logger(
     logger.propagate = False
     
     return QueueLoggerDict(logger=logger, listener=listener)
+
+def get_logger(logger_name: str = "request-logger", log_level: int = logging.INFO) -> logging.Logger:    
+    logger = logging.getLogger(logger_name)
+    logger.setLevel(log_level)
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.addHandler(stream_handler)
+    return logger
